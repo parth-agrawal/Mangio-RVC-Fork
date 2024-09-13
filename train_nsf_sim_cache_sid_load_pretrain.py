@@ -201,7 +201,13 @@ def run(rank, n_gpus, hps):
                     torch.load(hps.pretrainG, map_location="cpu")["model"]
                 )
             )  ##测试不加载优化器
+            logger.info('end of pretrainG if')
+
+
+        if hps.pretrainD == "":
+            logger.info("pretrainD is empty")
         if hps.pretrainD != "":
+            logger.info('pretrainD is not empty, start loading')
             if rank == 0:
                 logger.info("loaded pretrained %s" % (hps.pretrainD))
             print(
