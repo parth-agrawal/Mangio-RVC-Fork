@@ -46,6 +46,8 @@ class AudioProcessor:
         self.flag_vc = False
         self.output_audio_data = []
         self.output_wav_file = None
+        self.first_chunk_processed = False
+
 
     def setup_config(self):
         config = type('Config', (), {})()
@@ -193,25 +195,60 @@ class AudioProcessor:
 
     def audio_callback(self, indata, outdata, frames, times, status):
         start_time = time.perf_counter()
+        
+        if not self.first_chunk_processed:
+            step_start_time = time.perf_counter()
+        
         indata = librosa.to_mono(indata.T)
+        
+        if not self.first_chunk_processed:
+            print(f"Step 1 (to_mono) time: {time.perf_counter() - step_start_time:.4f} seconds")
+        
         if self.config.I_noise_reduce:
+            if not self.first_chunk_processed:
+                step_start_time = time.perf_counter()
             indata[:] = nr.reduce_noise(y=indata, sr=self.config.samplerate)
+            if not self.first_chunk_processed:
+                print(f"Step 2 (reduce_noise) time: {time.perf_counter() - step_start_time:.4f} seconds")
         
         frame_length = 2048
         hop_length = 1024
-        rms = librosa.feature.rms(
-            y=indata, frame_length=frame_length, hop_length=hop_length
-        )
+        
+        if not self.first_chunk_processed:
+            step_start_time = time.perf_counter()
+        
+        rms = librosa.feature.rms(y=indata, frame_length=frame_length, hop_length=hop_length)
+        
+        if not self.first_chunk_processed:
+            print(f"Step 3 (rms calculation) time: {time.perf_counter() - step_start_time:.4f} seconds")
+        
         if self.config.threhold > -60:
-            db_threhold = (
-                librosa.amplitude_to_db(rms, ref=1.0)[0] < self.config.threhold
-            )
+            if not self.first_chunk_processed:
+                step_start_time = time.perf_counter()
+            db_threhold = (librosa.amplitude_to_db(rms, ref=1.0)[0] < self.config.threhold)
             for i in range(db_threhold.shape[0]):
                 if db_threhold[i]:
                     indata[i * hop_length : (i + 1) * hop_length] = 0
+            if not self.first_chunk_processed:
+                print(f"Step 4 (thresholding) time: {time.perf_counter() - step_start_time:.4f} seconds")
+        
+        if not self.first_chunk_processed:
+            step_start_time = time.perf_counter()
+        
         self.input_wav[:] = np.append(self.input_wav[self.block_frame :], indata)
+        
+        if not self.first_chunk_processed:
+            print(f"Step 5 (append input_wav) time: {time.perf_counter() - step_start_time:.4f} seconds")
+        
+        if not self.first_chunk_processed:
+            step_start_time = time.perf_counter()
+        
         inp = torch.from_numpy(self.input_wav).to(device)
         res1 = self.resampler(inp)
+        
+        if not self.first_chunk_processed:
+            print(f"Step 6 (resampling) time: {time.perf_counter() - step_start_time:.4f} seconds")
+        
         rate1 = self.block_frame / (
             self.extra_frame
             + self.crossfade_frame
@@ -226,6 +263,9 @@ class AudioProcessor:
             + self.sola_search_frame
             + self.block_frame
         )
+        
+        step_start_time = time.perf_counter()
+        
         res2 = self.rvc.infer(
             res1,
             res1[-self.block_frame :].cpu().numpy(),
@@ -235,10 +275,23 @@ class AudioProcessor:
             self.pitchf,
             self.config.f0method,
         )
+        
+        print(f"Step 7 (RVC inference) time: {time.perf_counter() - step_start_time:.4f} seconds")
+        
+        if not self.first_chunk_processed:
+            step_start_time = time.perf_counter()
+        
         self.output_wav_cache[-res2.shape[0] :] = res2
         infer_wav = self.output_wav_cache[
             -self.crossfade_frame - self.sola_search_frame - self.block_frame :
         ]
+        
+        if not self.first_chunk_processed:
+            print(f"Step 8 (update output_wav_cache) time: {time.perf_counter() - step_start_time:.4f} seconds")
+        
+        if not self.first_chunk_processed:
+            step_start_time = time.perf_counter()
+        
         cor_nom = F.conv1d(
             infer_wav[None, None, : self.crossfade_frame + self.sola_search_frame],
             self.sola_buffer[None, None, :],
@@ -258,6 +311,13 @@ class AudioProcessor:
             cor_den = cor_den.cpu()
         sola_offset = torch.argmax(cor_nom[0, 0] / cor_den[0, 0])
         print("sola offset: " + str(int(sola_offset)))
+        
+        if not self.first_chunk_processed:
+            print(f"Step 9 (sola calculation) time: {time.perf_counter() - step_start_time:.4f} seconds")
+        
+        if not self.first_chunk_processed:
+            step_start_time = time.perf_counter()
+        
         self.output_wav[:] = infer_wav[sola_offset : sola_offset + self.block_frame]
         self.output_wav[: self.crossfade_frame] *= self.fade_in_window
         self.output_wav[: self.crossfade_frame] += self.sola_buffer[:]
@@ -275,6 +335,13 @@ class AudioProcessor:
             self.sola_buffer[:] = (
                 infer_wav[-self.crossfade_frame :] * self.fade_out_window
             )
+        
+        if not self.first_chunk_processed:
+            print(f"Step 10 (sola buffer update) time: {time.perf_counter() - step_start_time:.4f} seconds")
+        
+        if not self.first_chunk_processed:
+            step_start_time = time.perf_counter()
+        
         if self.config.O_noise_reduce:
             if sys.platform == "darwin":
                 noise_reduced_signal = nr.reduce_noise(
@@ -295,13 +362,31 @@ class AudioProcessor:
             else:
                 outdata[:] = self.output_wav[:].repeat(2, 1).t().cpu().numpy()
         
+        if not self.first_chunk_processed:
+            print(f"Step 11 (output noise reduction) time: {time.perf_counter() - step_start_time:.4f} seconds")
+        
+        if not self.first_chunk_processed:
+            step_start_time = time.perf_counter()
+        
         self.output_audio_data.extend(outdata.flatten())
-        print(f"Writing audio block of length {len(outdata)}")
-
+        
+        if not self.first_chunk_processed:
+            print(f"Step 12 (extend output_audio_data) time: {time.perf_counter() - step_start_time:.4f} seconds")
+        
+        if not self.first_chunk_processed:
+            step_start_time = time.perf_counter()
+        
         self.output_wav_file.writeframes((outdata * 32767).astype(np.int16).tobytes())
-
+        
+        if not self.first_chunk_processed:
+            print(f"Step 13 (write to output_wav_file) time: {time.perf_counter() - step_start_time:.4f} seconds")
+        
         total_time = time.perf_counter() - start_time
         print("infer time:" + str(total_time))
+
+        if not self.first_chunk_processed:
+            print(f"Inference time for first chunk: {total_time:.4f} seconds")
+            self.first_chunk_processed = True
 
     def stop_vc(self):
         self.flag_vc = False
